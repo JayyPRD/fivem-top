@@ -46,37 +46,21 @@ async function main() {
 
   const top = rows.slice(0, 10);
 
-  const rankingTexto =
-  top.length > 0
-    ? top.map((r, i) => {
-        const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
-        return `**${i + 1}. ${r.server_name}**\n👥 Max: **${r.max_players}** | Avg: **${r.avg_players}**\n🔗 ${link}`;
-      }).join("\n\n")
-    : "⏳ Esperando datos del collector...";
+  const lines = top.map((r, i) => {
+    const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
+    return `**${i + 1}. ${r.server_name}**\n👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}\n🔗 ${link}`;
+  });
 
-  const payload = {
-    content: "",
-    embeds: [
-      {
-        title: "SERVIDORES DOMINICANOS TOP EN VIVO-",
-        description: rankingTexto,
-        color: 7306,
-        footer: {
-          text: "By: JayyP"
-        },
-        image: {
-          url: "https://media.discordapp.net/attachments/1442556589952208947/1474185621474902036/standard_1.gif?ex=6998edd9&is=69979c59&hm=b8dbbd2ff4e9e1690e944fdb91df86c9a95b7e90e9a034f0d5a5c98faf49f023&="
-        },
-        timestamp: new Date().toISOString()
-      }
-    ],
-    attachments: []
-  };
+  const content =
+`📊 **TOP EN VIVO (FiveM)** — **${dayKey}**
+(Actualiza cada 30 min | Métrica: Max players)
+
+${lines.join("\n\n") || "No hay datos todavía para hoy."}`;
 
   const res = await fetch(WEBHOOK_EDIT_URL, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ content })
   });
 
   if (!res.ok) {
@@ -84,7 +68,7 @@ async function main() {
     throw new Error(`Webhook PATCH ${res.status}: ${text}`);
   }
 
-  console.log("Embed updated:", dayKey);
+  console.log("Report edited:", dayKey);
 }
 
 main().catch((e) => {
