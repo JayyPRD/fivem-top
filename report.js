@@ -46,21 +46,39 @@ async function main() {
 
   const top = rows.slice(0, 10);
 
-  const lines = top.map((r, i) => {
-    const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
-    return `**${i + 1}. ${r.server_name}**\n👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}\n🔗 ${link}`;
-  });
+  const rankingTexto =
+    top.length > 0
+      ? top
+          .map((r, i) => {
+            const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
+            return `**${i + 1}. ${r.server_name}**\n👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}\n🔗 ${link}`;
+          })
+          .join("\n\n")
+      : "No hay datos todavía para hoy.";
 
-  const content =
-`📊 **TOP EN VIVO (FiveM)** — **${dayKey}**
-(Actualiza cada 30 min | Métrica: Max players)
-
-${lines.join("\n\n") || "No hay datos todavía para hoy."}`;
+  const payload = {
+    content: null,
+    embeds: [
+      {
+        title: "SERVIDORES DOMINICANOS TOP EN VIVO-",
+        description: rankingTexto,
+        color: 7306,
+        footer: {
+          text: "By: JayyP"
+        },
+        image: {
+          url: "https://media.discordapp.net/attachments/1442556589952208947/1474185621474902036/standard_1.gif?ex=6998edd9&is=69979c59&hm=b8dbbd2ff4e9e1690e944fdb91df86c9a95b7e90e9a034f0d5a5c98faf49f023&="
+        },
+        timestamp: new Date().toISOString()
+      }
+    ],
+    attachments: []
+  };
 
   const res = await fetch(WEBHOOK_EDIT_URL, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content })
+    body: JSON.stringify(payload)
   });
 
   if (!res.ok) {
@@ -68,7 +86,7 @@ ${lines.join("\n\n") || "No hay datos todavía para hoy."}`;
     throw new Error(`Webhook PATCH ${res.status}: ${text}`);
   }
 
-  console.log("Report edited:", dayKey);
+  console.log("Embed updated:", dayKey);
 }
 
 main().catch((e) => {
