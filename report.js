@@ -1,5 +1,8 @@
 import { Client } from "pg";
 
+const WEBHOOK_EDIT_URL =
+  "https://discord.com/api/webhooks/1474043533244760243/reuyQcFm2gsXaofyaCcBFUsjS3uXNt8SUS0jiO3kPAO0lpNdIYhKSBSa0PU7siECEogw/messages/1474177130421030913";
+
 function dayKeyBogota(d = new Date()) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Bogota",
@@ -11,7 +14,6 @@ function dayKeyBogota(d = new Date()) {
 
 async function main() {
   if (!process.env.DATABASE_URL) throw new Error("Missing DATABASE_URL");
-  if (!process.env.DISCORD_WEBHOOK_URL) throw new Error("Missing DISCORD_WEBHOOK_URL");
 
   const dayKey = dayKeyBogota();
   const start = new Date(`${dayKey}T00:00:00-05:00`);
@@ -43,25 +45,30 @@ async function main() {
   await db.end();
 
   const top = rows.slice(0, 10);
+
   const lines = top.map((r, i) => {
     const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
     return `**${i + 1}. ${r.server_name}**\n👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}\n🔗 ${link}`;
   });
 
   const content =
-`📊 **TOP DIARIO (FiveM)** — **${dayKey}**
-(Métrica: **Max players** del día)
+`📊 **TOP EN VIVO (FiveM)** — **${dayKey}**
+(Actualiza cada 30 min | Métrica: Max players)
 
 ${lines.join("\n\n") || "No hay datos todavía para hoy."}`;
 
-  const res = await fetch(process.env.DISCORD_WEBHOOK_URL, {
-    method: "POST",
+  const res = await fetch(WEBHOOK_EDIT_URL, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content })
   });
 
-  if (!res.ok) throw new Error(`Webhook HTTP ${res.status}`);
-  console.log("Report sent:", dayKey);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Webhook PATCH ${res.status}: ${text}`);
+  }
+
+  console.log("Report edited:", dayKey);
 }
 
 main().catch((e) => {
