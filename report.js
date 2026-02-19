@@ -47,17 +47,15 @@ async function main() {
   const top = rows.slice(0, 10);
 
   const rankingTexto =
-    top.length > 0
-      ? top
-          .map((r, i) => {
-            const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
-            return `**${i + 1}. ${r.server_name}**\n👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}\n🔗 ${link}`;
-          })
-          .join("\n\n")
-      : "No hay datos todavía para hoy.";
+  top.length > 0
+    ? top.map((r, i) => {
+        const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
+        return `**${i + 1}. ${r.server_name}**\n👥 Max: **${r.max_players}** | Avg: **${r.avg_players}**\n🔗 ${link}`;
+      }).join("\n\n")
+    : "⏳ Esperando datos del collector...";
 
   const payload = {
-    content: null,
+    content: "",
     embeds: [
       {
         title: "SERVIDORES DOMINICANOS TOP EN VIVO-",
