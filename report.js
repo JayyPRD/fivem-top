@@ -46,34 +46,21 @@ async function main() {
 
   const top = rows.slice(0, 10);
 
-  const description =
-    top.length > 0
-      ? top
-          .map((r, i) => {
-            const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
-            return `**${i + 1}. ${r.server_name}**\n👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}\n🔗 ${link}`;
-          })
-          .join("\n\n")
-      : "No hay datos todavía para hoy.";
+  const lines = top.map((r, i) => {
+    const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
+    return `**${i + 1}. ${r.server_name}**\n👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}\n🔗 ${link}`;
+  });
 
-  const payload = {
-    // Puedes dejar content vacío o poner un texto corto
-    content: "",
-    embeds: [
-      {
-        title: `📊 TOP EN VIVO (FiveM) — ${dayKey}`,
-        description,
-        footer: { text: "Actualiza cada 30 min • Métrica: Max players" },
-        timestamp: new Date().toISOString()
-      }
-    ],
-    allowed_mentions: { parse: [] }
-  };
+  const content =
+`📊 **TOP EN VIVO (FiveM)** — **${dayKey}**
+(Actualiza cada 30 min | Métrica: Max players)
+
+${lines.join("\n\n") || "No hay datos todavía para hoy."}`;
 
   const res = await fetch(WEBHOOK_EDIT_URL, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ content })
   });
 
   if (!res.ok) {
@@ -81,7 +68,7 @@ async function main() {
     throw new Error(`Webhook PATCH ${res.status}: ${text}`);
   }
 
-  console.log("Report embed edited:", dayKey);
+  console.log("Report edited:", dayKey);
 }
 
 main().catch((e) => {
