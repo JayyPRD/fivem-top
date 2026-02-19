@@ -1,12 +1,14 @@
 {
   "name": "fivem-top",
   "version": "1.0.0",
-  "type": "module",
+  "main": "collector.js",
   "scripts": {
+    "start": "node collector.js",
     "collect": "node collector.js",
     "report": "node report.js"
   },
   "dependencies": {
-    "pg": "^8.12.0"
+    "node-fetch": "^3.3.2",
+    "pg": "^8.11.3"
   }
 }
