@@ -14,9 +14,9 @@ function rdNow() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "America/Santo_Domingo" }));
 }
 
-function isMidnightRD() {
+function isResetHourRD() {
   const d = rdNow();
-  return d.getHours() === 0 && d.getMinutes() === 0;
+  return d.getHours() === 9 && d.getMinutes() === 0;
 }
 
 function minutesBetween(a, b) {
