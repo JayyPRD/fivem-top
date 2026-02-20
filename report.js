@@ -1,4 +1,5 @@
 import { Client } from "pg";
+import servers from "./servers.json" assert { type: "json" };
 
 function rdNow() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "America/Santo_Domingo" }));
@@ -31,7 +32,7 @@ async function getLivePlayers(serverCode) {
   }
 }
 
-// ✅ Concurrencia limitada para no spamear requests
+// ✅ Concurrencia limitada
 async function mapLimit(items, limit, fn) {
   const results = new Array(items.length);
   let idx = 0;
@@ -62,6 +63,7 @@ async function ensureMessageId(webhookBaseUrl) {
         image: {
           url: "https://media.discordapp.net/attachments/1442556589952208947/1474185621474902036/standard_1.gif?ex=6998edd9&is=69979c59&hm=b8dbbd2ff4e9e1690e944fdb91df86c9a95b7e90e9a034f0d5a5c98faf49f023&=",
         },
+        timestamp: new Date().toISOString(),
       },
     ],
     attachments: [],
@@ -112,7 +114,7 @@ function getCompetitiveWindowRD() {
   start.setHours(12, 0, 0, 0); // ✅ 12:00 PM RD
 
   if (now.getHours() < 12) {
-    start.setDate(start.getDate() - 1); // antes de 12 → ayer 12 PM
+    start.setDate(start.getDate() - 1);
   }
 
   return { start, end: now };
@@ -125,7 +127,7 @@ async function main() {
   const webhookBase = process.env.DISCORD_WEBHOOK_URL;
   const messageId = await ensureMessageId(webhookBase);
 
-  // ✅ Reset visual automático a las 12:00 PM RD
+  // ✅ Reset visual automático
   if (isResetHourRD()) {
     const payloadReset = {
       content: "",
@@ -150,8 +152,10 @@ async function main() {
     return;
   }
 
-  // ✅ Rango nuevo (12:00 PM RD → ahora)
   const { start, end } = getCompetitiveWindowRD();
+
+  const codes = servers.map((s) => s.code);
+  const names = servers.map((s) => s.name);
 
   const db = new Client({
     connectionString: process.env.DATABASE_URL,
@@ -160,50 +164,65 @@ async function main() {
 
   await db.connect();
 
+  // ✅ Siempre devuelve LOS 8 servers aunque no tengan samples en la ventana
   const { rows } = await db.query(
     `
-    WITH win AS (
+    WITH srv AS (
+      SELECT * FROM unnest($3::text[], $4::text[]) AS s(server_code, server_name)
+    ),
+    win AS (
       SELECT *
       FROM samples
       WHERE ts >= $1 AND ts <= $2
+        AND server_code = ANY($3::text[])
     ),
-    latest AS (
+    agg AS (
+      SELECT
+        server_code,
+        MAX(players) AS max_players,
+        ROUND(AVG(players)::numeric, 1) AS avg_players,
+        COUNT(*) AS samples
+      FROM win
+      GROUP BY server_code
+    ),
+    latest_in_win AS (
       SELECT DISTINCT ON (server_code)
         server_code,
-        players AS online_now,
-        ts AS last_seen
+        players AS online_in_win,
+        ts AS last_seen_in_win
       FROM win
       ORDER BY server_code, ts DESC
     )
     SELECT
-      w.server_code,
-      w.server_name,
-      MAX(w.players) AS max_players,
-      ROUND(AVG(w.players)::numeric, 1) AS avg_players,
-      COUNT(*) AS samples,
-      l.online_now,
-      l.last_seen
-    FROM win w
-    JOIN latest l USING (server_code)
-    GROUP BY w.server_code, w.server_name, l.online_now, l.last_seen
-    ORDER BY MAX(w.players) DESC;
+      srv.server_code,
+      srv.server_name,
+      COALESCE(agg.max_players, 0) AS max_players,
+      COALESCE(agg.avg_players, 0.0) AS avg_players,
+      COALESCE(agg.samples, 0) AS samples,
+      latest_in_win.online_in_win,
+      latest_in_win.last_seen_in_win
+    FROM srv
+    LEFT JOIN agg ON agg.server_code = srv.server_code
+    LEFT JOIN latest_in_win ON latest_in_win.server_code = srv.server_code
     `,
-    [start.toISOString(), end.toISOString()]
+    [start.toISOString(), end.toISOString(), codes, names]
   );
 
   await db.end();
 
-  const top = rows.slice(0, 10);
+  // ✅ LIVE CHECK para TODOS los servers.json (tú tienes 8)
+  const liveResults = await mapLimit(servers, 4, async (s) => {
+    const live = await getLivePlayers(s.code);
+    return { server_code: s.code, live };
+  });
+  const liveMap = new Map(liveResults.map((x) => [x.server_code, x.live]));
 
   const offlineMinutes = Number(process.env.OFFLINE_MINUTES || "45");
   const nowRD = rdNow();
 
-  // ✅ LIVE CHECK para los del TOP (sin eliminar offline)
-  const liveResults = await mapLimit(top, 4, async (r) => {
-    const live = await getLivePlayers(r.server_code);
-    return { server_code: r.server_code, live };
-  });
-  const liveMap = new Map(liveResults.map((x) => [x.server_code, x.live]));
+  // ✅ Orden por Max (ventana) y top 10 (pero realmente serán 8)
+  const ordered = [...rows].sort((a, b) => Number(b.max_players) - Number(a.max_players));
+  const top = ordered.slice(0, 10);
 
   const rankingTexto =
     top.length > 0
@@ -217,24 +236,25 @@ async function main() {
 
             const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
 
-            const lastSeen = r.last_seen ? new Date(r.last_seen) : null;
+            const lastSeen = r.last_seen_in_win ? new Date(r.last_seen_in_win) : null;
             const minsAgo = lastSeen ? minutesBetween(nowRD, lastSeen) : 999999;
 
-            // fallback offline por tiempo (solo si CFX falla)
             const staleOffline = !lastSeen || minsAgo > offlineMinutes;
 
             const live = liveMap.get(r.server_code) || { ok: false };
 
-            // ✅ status final (NO se filtra, siempre aparece)
             let statusLine;
             if (live.ok) {
               statusLine = live.players > 0
                 ? `🟢 En línea: **${live.players}**`
                 : `🔴 **OFFLINE**`;
             } else {
-              statusLine = staleOffline
-                ? `🔴 **OFFLINE**`
-                : `🟢 En línea: **${r.online_now}**`;
+              // fallback DB (si live falla)
+              if (staleOffline || Number(r.online_in_win || 0) === 0) {
+                statusLine = `🔴 **OFFLINE**`;
+              } else {
+                statusLine = `🟢 En línea: **${r.online_in_win}**`;
+              }
             }
 
             const maxLine = `👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}`;
