@@ -1,22 +1,12 @@
 import { Client } from "pg";
 
-function dayKeyBogota(d = new Date()) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Bogota",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(d);
-}
-
 function rdNow() {
-  // Fecha “local” RD (sin depender del timezone del container)
   return new Date(new Date().toLocaleString("en-US", { timeZone: "America/Santo_Domingo" }));
 }
 
 function isResetHourRD() {
   const d = rdNow();
-  return d.getHours() === 9 && d.getMinutes() === 0;
+  return d.getHours() === 12 && d.getMinutes() === 0; // ✅ 12:00 AM RD
 }
 
 function minutesBetween(a, b) {
@@ -77,7 +67,20 @@ async function patchMessage(webhookBase, messageId, payload) {
 }
 
 function buildResetRanking() {
-  return "🌙 **Nuevo día iniciado**\n\n🟢 En línea: **0** | 👥 Max: **0** | Avg: **0.0** | Muestras: 0";
+  return "🔄 **Reinicio diario (12:00 PM RD)**\n\n🟢 En línea: **0** | 👥 Max: **0** | Avg: **0.0** | Muestras: 0";
+}
+
+// ✅ Ventana competitiva: 12:00 PM RD → ahora
+function getCompetitiveWindowRD() {
+  const now = rdNow();
+  const start = new Date(now);
+  start.setHours(12, 0, 0, 0); // ✅ 12:00 PM RD
+
+  if (now.getHours() < 12) {
+    start.setDate(start.getDate() - 1); // antes de 11 → ayer 11 AM
+  }
+
+  return { start, end: now };
 }
 
 async function main() {
@@ -87,7 +90,7 @@ async function main() {
   const webhookBase = process.env.DISCORD_WEBHOOK_URL;
   const messageId = await ensureMessageId(webhookBase);
 
-  // ✅ Reset automático a las 11:30 AM RD
+  // ✅ Reset visual automático a las 12:00 AM RD
   if (isResetHourRD()) {
     const payloadReset = {
       content: "",
@@ -108,13 +111,12 @@ async function main() {
     };
 
     await patchMessage(webhookBase, messageId, payloadReset);
-    console.log("Reset automático aplicado (10:00 RD). message:", messageId);
+    console.log("Reset automático aplicado (12:00 RD). message:", messageId);
     return;
   }
 
-  const dayKey = dayKeyBogota();
-  const start = new Date(`${dayKey}T00:00:00-05:00`);
-  const end = new Date(`${dayKey}T23:59:59-05:00`);
+  // ✅ Rango nuevo (12:00 AM RD → ahora)
+  const { start, end } = getCompetitiveWindowRD();
 
   const db = new Client({
     connectionString: process.env.DATABASE_URL,
@@ -123,10 +125,9 @@ async function main() {
 
   await db.connect();
 
-  // Trae: Max/Avg/Samples + “online_now” (último sample del día) + last_seen
   const { rows } = await db.query(
     `
-    WITH day AS (
+    WITH win AS (
       SELECT *
       FROM samples
       WHERE ts >= $1 AND ts <= $2
@@ -136,21 +137,21 @@ async function main() {
         server_code,
         players AS online_now,
         ts AS last_seen
-      FROM day
+      FROM win
       ORDER BY server_code, ts DESC
     )
     SELECT
-      d.server_code,
-      d.server_name,
-      MAX(d.players) AS max_players,
-      ROUND(AVG(d.players)::numeric, 1) AS avg_players,
+      w.server_code,
+      w.server_name,
+      MAX(w.players) AS max_players,
+      ROUND(AVG(w.players)::numeric, 1) AS avg_players,
       COUNT(*) AS samples,
       l.online_now,
       l.last_seen
-    FROM day d
+    FROM win w
     JOIN latest l USING (server_code)
-    GROUP BY d.server_code, d.server_name, l.online_now, l.last_seen
-    ORDER BY MAX(d.players) DESC;
+    GROUP BY w.server_code, w.server_name, l.online_now, l.last_seen
+    ORDER BY MAX(w.players) DESC;
     `,
     [start.toISOString(), end.toISOString()]
   );
@@ -159,7 +160,6 @@ async function main() {
 
   const top = rows.slice(0, 10);
 
-  // ✅ OFFLINE si el último sample está viejo
   const offlineMinutes = Number(process.env.OFFLINE_MINUTES || "45");
   const nowRD = rdNow();
 
@@ -185,7 +185,7 @@ async function main() {
               : `🟢 En línea: **${r.online_now}**`;
 
             const maxLine = `👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}`;
-            const seenLine = isOffline ? `⏱️ Último ping: hace **${minsAgo} min**` : `⏱️ Último ping: hace **${minsAgo} min**`;
+            const seenLine = `⏱️ Último ping: hace **${minsAgo} min**`;
 
             return `${medal} **${r.server_name}**\n${statusLine}\n${maxLine}\n${seenLine}\n🔗 ${link}`;
           })
@@ -197,7 +197,7 @@ async function main() {
     embeds: [
       {
         title: "📊 TOP EN VIVO (FiveM)",
-        description: `(Actualiza cada 30 min | Métrica: Max players)\n\n${rankingTexto}`,
+        description: `(Reinicio diario: **11:00 AM RD** | Actualiza cada 30 min | Métrica: Max players)\n\n${rankingTexto}`,
         color: 7306,
         footer: { text: "By: JayyP" },
         image: {
@@ -211,7 +211,7 @@ async function main() {
   };
 
   await patchMessage(webhookBase, messageId, payload);
-  console.log("Report updated:", dayKey, "message:", messageId);
+  console.log("Report updated. Window:", start.toISOString(), "→", end.toISOString(), "message:", messageId);
 }
 
 main().catch((e) => {
