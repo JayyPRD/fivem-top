@@ -16,7 +16,7 @@ async function ensureMessageId(webhookBaseUrl) {
     content: "",
     embeds: [
       {
-        title: `📊 TOP EN VIVO (FiveM) — ${dayKey}`
+        title: `📊 TOP EN VIVO (FiveM) — ${dayKey}`,
         description: "⏳ Inicializando… en breve aparecerá el top.",
         color: 7306,
         footer: { text: "By: JayyP" },
