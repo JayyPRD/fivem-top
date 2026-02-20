@@ -87,7 +87,7 @@ async function main() {
   const webhookBase = process.env.DISCORD_WEBHOOK_URL;
   const messageId = await ensureMessageId(webhookBase);
 
-  // ✅ Reset automático a las 12:00 AM RD
+  // ✅ Reset automático a las 11:30 AM RD
   if (isResetHourRD()) {
     const payloadReset = {
       content: "",
