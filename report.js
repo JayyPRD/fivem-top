@@ -8,43 +8,6 @@ function minutesBetween(a, b) {
   return Math.floor((a.getTime() - b.getTime()) / 60000);
 }
 
-// ✅ Live check desde CFX
-async function getLivePlayers(serverCode) {
-  try {
-    const res = await fetch(`https://servers.fivem.net/api/servers/single/${serverCode}`, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-    });
-    if (!res.ok) return { ok: false };
-
-    const data = await res.json();
-    const players = data?.Data?.clients;
-
-    if (typeof players === "number") {
-      return { ok: true, players };
-    }
-    return { ok: false };
-  } catch {
-    return { ok: false };
-  }
-}
-
-// ✅ Concurrencia limitada para no spamear requests
-async function mapLimit(items, limit, fn) {
-  const results = new Array(items.length);
-  let idx = 0;
-
-  async function worker() {
-    while (idx < items.length) {
-      const cur = idx++;
-      results[cur] = await fn(items[cur], cur);
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(limit, items.length) }, worker);
-  await Promise.all(workers);
-  return results;
-}
-
 async function ensureMessageId(webhookBaseUrl) {
   if (process.env.DISCORD_MESSAGE_ID) return process.env.DISCORD_MESSAGE_ID;
 
@@ -148,51 +111,30 @@ async function main() {
   const offlineMinutes = Number(process.env.OFFLINE_MINUTES || "15");
   const nowRD = rdNow();
 
-  const top = rows.slice(0, 10);
-
-  // ✅ Live checks (limit 4 concurrent)
-  const liveResults = await mapLimit(top, 4, async (r) => {
-    const live = await getLivePlayers(r.server_code);
-    return { server_code: r.server_code, live };
-  });
-
-  const liveMap = new Map(liveResults.map(x => [x.server_code, x.live]));
-
   const rankingTexto =
-    top.length > 0
-      ? top
-          .map((r, i) => {
-            const medal =
-              i === 0 ? "🥇" :
-              i === 1 ? "🥈" :
-              i === 2 ? "🥉" :
-              `**${i + 1}.**`;
+    rows.length > 0
+      ? rows.slice(0, 10).map((r, i) => {
+          const medal =
+            i === 0 ? "🥇" :
+            i === 1 ? "🥈" :
+            i === 2 ? "🥉" :
+            `**${i + 1}.**`;
 
-            const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
+          const lastSeen = r.last_seen ? new Date(r.last_seen) : null;
+          const minsAgo = lastSeen ? minutesBetween(nowRD, lastSeen) : 999999;
 
-            // Fallback “offline por sample viejo”
-            const lastSeen = r.last_seen ? new Date(r.last_seen) : null;
-            const minsAgo = lastSeen ? minutesBetween(nowRD, lastSeen) : 999999;
-            const staleOffline = !lastSeen || minsAgo > offlineMinutes;
+          const isOffline = !lastSeen || minsAgo > offlineMinutes;
+          const status = isOffline
+            ? `🔴 **OFFLINE**`
+            : `🟢 En línea: **${r.online_now}**`;
 
-            // ✅ Live status real
-            const live = liveMap.get(r.server_code) || { ok: false };
-            let status;
+          const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
 
-            if (live.ok) {
-              // Si CFX dice 0, lo tratamos como offline real
-              status = live.players > 0 ? `🟢 En línea: **${live.players}**` : `🔴 **OFFLINE**`;
-            } else {
-              // si CFX falló, usamos tu regla por tiempo
-              status = staleOffline ? `🔴 **OFFLINE**` : `🟢 En línea: **${r.online_now}**`;
-            }
-
-            return `${medal} **${r.server_name}**
+          return `${medal} **${r.server_name}**
 ${status}
 👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}
 🔗 ${link}`;
-          })
-          .join("\n\n")
+        }).join("\n\n")
       : "⏳ No hay datos todavía.";
 
   const payload = {
@@ -200,7 +142,8 @@ ${status}
     embeds: [
       {
         title: "📊 TOP EN VIVO (FiveM)",
-        description: `🕙 Reinicio diario: 10:00 AM RD\n\n${rankingTexto}`,
+        description:
+          `🕙 Reinicio diario: 10:00 AM RD\n\n${rankingTexto}`,
         color: 7306,
         footer: { text: "By: JayyP" },
         timestamp: new Date().toISOString(),
@@ -211,7 +154,4 @@ ${status}
   await patchMessage(webhookBase, messageId, payload);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main();
