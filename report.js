@@ -1,52 +1,26 @@
 import { Client } from "pg";
-import servers from "./servers.json" assert { type: "json" };
+
+function dayKeyBogota(d = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Bogota",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
 
 function rdNow() {
+  // Fecha “local” RD (sin depender del timezone del container)
   return new Date(new Date().toLocaleString("en-US", { timeZone: "America/Santo_Domingo" }));
 }
 
-function isResetHourRD() {
+function isMidnightRD() {
   const d = rdNow();
-  return d.getHours() === 12 && d.getMinutes() === 0; // ✅ 12:00 PM RD
+  return d.getHours() === 0 && d.getMinutes() === 0;
 }
 
 function minutesBetween(a, b) {
   return Math.floor((a.getTime() - b.getTime()) / 60000);
-}
-
-// ✅ LIVE CHECK (CFX) — players reales ahora mismo
-async function getLivePlayers(serverCode) {
-  try {
-    const res = await fetch(`https://servers.fivem.net/api/servers/single/${serverCode}`, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-    });
-    if (!res.ok) return { ok: false };
-
-    const data = await res.json();
-    const players = data?.Data?.clients;
-
-    if (typeof players === "number") return { ok: true, players };
-    return { ok: false };
-  } catch {
-    return { ok: false };
-  }
-}
-
-// ✅ Concurrencia limitada
-async function mapLimit(items, limit, fn) {
-  const results = new Array(items.length);
-  let idx = 0;
-
-  async function worker() {
-    while (idx < items.length) {
-      const cur = idx++;
-      results[cur] = await fn(items[cur], cur);
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(limit, items.length) }, worker);
-  await Promise.all(workers);
-  return results;
 }
 
 async function ensureMessageId(webhookBaseUrl) {
@@ -63,7 +37,6 @@ async function ensureMessageId(webhookBaseUrl) {
         image: {
           url: "https://media.discordapp.net/attachments/1442556589952208947/1474185621474902036/standard_1.gif?ex=6998edd9&is=69979c59&hm=b8dbbd2ff4e9e1690e944fdb91df86c9a95b7e90e9a034f0d5a5c98faf49f023&=",
         },
-        timestamp: new Date().toISOString(),
       },
     ],
     attachments: [],
@@ -104,20 +77,7 @@ async function patchMessage(webhookBase, messageId, payload) {
 }
 
 function buildResetRanking() {
-  return "🔄 **Reinicio diario (12:00 PM RD)**\n\n🟢 En línea: **0** | 👥 Max: **0** | Avg: **0.0** | Muestras: 0";
-}
-
-// ✅ Ventana competitiva: 12:00 PM RD → ahora
-function getCompetitiveWindowRD() {
-  const now = rdNow();
-  const start = new Date(now);
-  start.setHours(12, 0, 0, 0); // ✅ 12:00 PM RD
-
-  if (now.getHours() < 12) {
-    start.setDate(start.getDate() - 1);
-  }
-
-  return { start, end: now };
+  return "🌙 **Nuevo día iniciado**\n\n🟢 En línea: **0** | 👥 Max: **0** | Avg: **0.0** | Muestras: 0";
 }
 
 async function main() {
@@ -127,8 +87,8 @@ async function main() {
   const webhookBase = process.env.DISCORD_WEBHOOK_URL;
   const messageId = await ensureMessageId(webhookBase);
 
-  // ✅ Reset visual automático
-  if (isResetHourRD()) {
+  // ✅ Reset automático a las 12:00 AM RD
+  if (isMidnightRD()) {
     const payloadReset = {
       content: "",
       embeds: [
@@ -148,14 +108,13 @@ async function main() {
     };
 
     await patchMessage(webhookBase, messageId, payloadReset);
-    console.log("Reset automático aplicado (12:00 PM RD). message:", messageId);
+    console.log("Reset automático aplicado (00:00 RD). message:", messageId);
     return;
   }
 
-  const { start, end } = getCompetitiveWindowRD();
-
-  const codes = servers.map((s) => s.code);
-  const names = servers.map((s) => s.name);
+  const dayKey = dayKeyBogota();
+  const start = new Date(`${dayKey}T00:00:00-05:00`);
+  const end = new Date(`${dayKey}T23:59:59-05:00`);
 
   const db = new Client({
     connectionString: process.env.DATABASE_URL,
@@ -164,65 +123,45 @@ async function main() {
 
   await db.connect();
 
-  // ✅ Siempre devuelve LOS 8 servers aunque no tengan samples en la ventana
+  // Trae: Max/Avg/Samples + “online_now” (último sample del día) + last_seen
   const { rows } = await db.query(
     `
-    WITH srv AS (
-      SELECT * FROM unnest($3::text[], $4::text[]) AS s(server_code, server_name)
-    ),
-    win AS (
+    WITH day AS (
       SELECT *
       FROM samples
       WHERE ts >= $1 AND ts <= $2
-        AND server_code = ANY($3::text[])
     ),
-    agg AS (
-      SELECT
-        server_code,
-        MAX(players) AS max_players,
-        ROUND(AVG(players)::numeric, 1) AS avg_players,
-        COUNT(*) AS samples
-      FROM win
-      GROUP BY server_code
-    ),
-    latest_in_win AS (
+    latest AS (
       SELECT DISTINCT ON (server_code)
         server_code,
-        players AS online_in_win,
-        ts AS last_seen_in_win
-      FROM win
+        players AS online_now,
+        ts AS last_seen
+      FROM day
       ORDER BY server_code, ts DESC
     )
     SELECT
-      srv.server_code,
-      srv.server_name,
-      COALESCE(agg.max_players, 0) AS max_players,
-      COALESCE(agg.avg_players, 0.0) AS avg_players,
-      COALESCE(agg.samples, 0) AS samples,
-      latest_in_win.online_in_win,
-      latest_in_win.last_seen_in_win
-    FROM srv
-    LEFT JOIN agg ON agg.server_code = srv.server_code
-    LEFT JOIN latest_in_win ON latest_in_win.server_code = srv.server_code
+      d.server_code,
+      d.server_name,
+      MAX(d.players) AS max_players,
+      ROUND(AVG(d.players)::numeric, 1) AS avg_players,
+      COUNT(*) AS samples,
+      l.online_now,
+      l.last_seen
+    FROM day d
+    JOIN latest l USING (server_code)
+    GROUP BY d.server_code, d.server_name, l.online_now, l.last_seen
+    ORDER BY MAX(d.players) DESC;
     `,
-    [start.toISOString(), end.toISOString(), codes, names]
+    [start.toISOString(), end.toISOString()]
   );
 
   await db.end();
 
-  // ✅ LIVE CHECK para TODOS los servers.json (tú tienes 8)
-  const liveResults = await mapLimit(servers, 4, async (s) => {
-    const live = await getLivePlayers(s.code);
-    return { server_code: s.code, live };
-  });
-  const liveMap = new Map(liveResults.map((x) => [x.server_code, x.live]));
+  const top = rows.slice(0, 10);
 
+  // ✅ OFFLINE si el último sample está viejo
   const offlineMinutes = Number(process.env.OFFLINE_MINUTES || "45");
   const nowRD = rdNow();
-
-  // ✅ Orden por Max (ventana) y top 10 (pero realmente serán 8)
-  const ordered = [...rows].sort((a, b) => Number(b.max_players) - Number(a.max_players));
-  const top = ordered.slice(0, 10);
 
   const rankingTexto =
     top.length > 0
@@ -236,29 +175,17 @@ async function main() {
 
             const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
 
-            const lastSeen = r.last_seen_in_win ? new Date(r.last_seen_in_win) : null;
+            const lastSeen = r.last_seen ? new Date(r.last_seen) : null;
             const minsAgo = lastSeen ? minutesBetween(nowRD, lastSeen) : 999999;
 
-            const staleOffline = !lastSeen || minsAgo > offlineMinutes;
+            const isOffline = !lastSeen || minsAgo > offlineMinutes;
 
-            const live = liveMap.get(r.server_code) || { ok: false };
-
-            let statusLine;
-            if (live.ok) {
-              statusLine = live.players > 0
-                ? `🟢 En línea: **${live.players}**`
-                : `🔴 **OFFLINE**`;
-            } else {
-              // fallback DB (si live falla)
-              if (staleOffline || Number(r.online_in_win || 0) === 0) {
-                statusLine = `🔴 **OFFLINE**`;
-              } else {
-                statusLine = `🟢 En línea: **${r.online_in_win}**`;
-              }
-            }
+            const statusLine = isOffline
+              ? `🔴 **OFFLINE**`
+              : `🟢 En línea: **${r.online_now}**`;
 
             const maxLine = `👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}`;
-            const seenLine = `⏱️ Último ping: hace **${minsAgo} min**`;
+            const seenLine = isOffline ? `⏱️ Último ping: hace **${minsAgo} min**` : `⏱️ Último ping: hace **${minsAgo} min**`;
 
             return `${medal} **${r.server_name}**\n${statusLine}\n${maxLine}\n${seenLine}\n🔗 ${link}`;
           })
@@ -270,7 +197,7 @@ async function main() {
     embeds: [
       {
         title: "📊 TOP EN VIVO (FiveM)",
-        description: `(Reinicio diario: **12:00 PM RD** | Actualiza cada 30 min | Métrica: Max players)\n\n${rankingTexto}`,
+        description: `(Actualiza cada 30 min | Métrica: Max players)\n\n${rankingTexto}`,
         color: 7306,
         footer: { text: "By: JayyP" },
         image: {
@@ -284,7 +211,7 @@ async function main() {
   };
 
   await patchMessage(webhookBase, messageId, payload);
-  console.log("Report updated. Window:", start.toISOString(), "→", end.toISOString(), "message:", messageId);
+  console.log("Report updated:", dayKey, "message:", messageId);
 }
 
 main().catch((e) => {
