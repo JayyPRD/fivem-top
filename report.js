@@ -1,12 +1,12 @@
 import { Client } from "pg";
 
-function dayKeyBogota(d = new Date()) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Bogota",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(d);
+function rdNow() {
+  // Hora RD real (sin depender del timezone del container)
+  return new Date(new Date().toLocaleString("en-US", { timeZone: "America/Santo_Domingo" }));
+}
+
+function minutesBetween(a, b) {
+  return Math.floor((a.getTime() - b.getTime()) / 60000);
 }
 
 async function ensureMessageId(webhookBaseUrl) {
@@ -16,13 +16,14 @@ async function ensureMessageId(webhookBaseUrl) {
     content: "",
     embeds: [
       {
-        title: `📊 TOP EN VIVO (FiveM) — ${dayKey}`,
+        title: "📊 TOP EN VIVO (FiveM)",
         description: "⏳ Inicializando… en breve aparecerá el top.",
         color: 7306,
         footer: { text: "By: JayyP" },
         image: {
           url: "https://media.discordapp.net/attachments/1442556589952208947/1474185621474902036/standard_1.gif?ex=6998edd9&is=69979c59&hm=b8dbbd2ff4e9e1690e944fdb91df86c9a95b7e90e9a034f0d5a5c98faf49f023&=",
         },
+        timestamp: new Date().toISOString(),
       },
     ],
     attachments: [],
@@ -47,10 +48,6 @@ async function ensureMessageId(webhookBaseUrl) {
   return data.id;
 }
 
-function buildResetRanking() {
-  return "🔄 **Reiniciado** — esperando próximo conteo...\n\n🟢 En línea: **0** | 👥 Max: **0** | Avg: **0.0** | Muestras: 0";
-}
-
 async function patchMessage(webhookBase, messageId, payload) {
   const editUrl = `${webhookBase}/messages/${messageId}`;
 
@@ -66,6 +63,35 @@ async function patchMessage(webhookBase, messageId, payload) {
   }
 }
 
+// ✅ Calcula el rango del “día competitivo” que reinicia a las 10:00 AM RD
+function getCompetitiveWindowRD() {
+  const now = rdNow();
+
+  const start = new Date(now);
+  start.setHours(10, 0, 0, 0); // 10:00 AM RD
+
+  // Si todavía no son las 10 AM, el ciclo comenzó ayer a las 10 AM
+  if (now.getHours() < 10) {
+    start.setDate(start.getDate() - 1);
+  }
+
+  return { start, end: now };
+}
+
+function formatWindowLabelRD(start, end) {
+  // Etiqueta simple para el embed
+  const fmt = new Intl.DateTimeFormat("es-DO", {
+    timeZone: "America/Santo_Domingo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  return `${fmt.format(start)} → ${fmt.format(end)}`;
+}
+
 async function main() {
   if (!process.env.DATABASE_URL) throw new Error("Missing DATABASE_URL");
   if (!process.env.DISCORD_WEBHOOK_URL) throw new Error("Missing DISCORD_WEBHOOK_URL");
@@ -73,34 +99,9 @@ async function main() {
   const webhookBase = process.env.DISCORD_WEBHOOK_URL;
   const messageId = await ensureMessageId(webhookBase);
 
-  // ✅ RESET “00” al reiniciar (tú lo activas con variable)
-  if (String(process.env.RESET_ON_RESTART || "").trim() === "1") {
-    const payloadReset = {
-      content: "",
-      embeds: [
-        {
-          title: "📊 **TOP EN VIVO (FiveM)**",
-          description: `(Actualiza cada 30 min | Métrica: Max players)\n\n${buildResetRanking()}`,
-          color: 7306,
-          footer: { text: "By: JayyP" },
-          image: {
-            url: "https://media.discordapp.net/attachments/1442556589952208947/1474185621474902036/standard_1.gif?ex=6998edd9&is=69979c59&hm=b8dbbd2ff4e9e1690e944fdb91df86c9a95b7e90e9a034f0d5a5c98faf49f023&=",
-          },
-          timestamp: new Date().toISOString(),
-        },
-      ],
-      attachments: [],
-      allowed_mentions: { parse: [] },
-    };
-
-    await patchMessage(webhookBase, messageId, payloadReset);
-    console.log("Reset applied (00). message:", messageId);
-    return;
-  }
-
-  const dayKey = dayKeyBogota();
-  const start = new Date(`${dayKey}T00:00:00-05:00`);
-  const end = new Date(`${dayKey}T23:59:59-05:00`);
+  // ✅ Ventana 10AM RD → ahora
+  const { start, end } = getCompetitiveWindowRD();
+  const windowLabel = formatWindowLabelRD(start, end);
 
   const db = new Client({
     connectionString: process.env.DATABASE_URL,
@@ -109,10 +110,10 @@ async function main() {
 
   await db.connect();
 
-  // ✅ Incluye ONLINE (última muestra del día) + Max/Avg/Samples
+  // ✅ Online (último sample del rango) + Max/Avg/Samples
   const { rows } = await db.query(
     `
-    WITH day AS (
+    WITH win AS (
       SELECT *
       FROM samples
       WHERE ts >= $1 AND ts <= $2
@@ -122,21 +123,21 @@ async function main() {
         server_code,
         players AS online_now,
         ts AS last_seen
-      FROM day
+      FROM win
       ORDER BY server_code, ts DESC
     )
     SELECT
-      d.server_code,
-      d.server_name,
-      MAX(d.players) AS max_players,
-      ROUND(AVG(d.players)::numeric, 1) AS avg_players,
+      w.server_code,
+      w.server_name,
+      MAX(w.players) AS max_players,
+      ROUND(AVG(w.players)::numeric, 1) AS avg_players,
       COUNT(*) AS samples,
       l.online_now,
       l.last_seen
-    FROM day d
+    FROM win w
     JOIN latest l USING (server_code)
-    GROUP BY d.server_code, d.server_name, l.online_now, l.last_seen
-    ORDER BY MAX(d.players) DESC;
+    GROUP BY w.server_code, w.server_name, l.online_now, l.last_seen
+    ORDER BY MAX(w.players) DESC;
     `,
     [start.toISOString(), end.toISOString()]
   );
@@ -145,7 +146,9 @@ async function main() {
 
   const top = rows.slice(0, 10);
 
-  // ✅ Medallas + 🟢 En línea
+  const offlineMinutes = Number(process.env.OFFLINE_MINUTES || "45");
+  const nowRD = rdNow();
+
   const rankingTexto =
     top.length > 0
       ? top
@@ -158,7 +161,13 @@ async function main() {
 
             const link = `https://servers.fivem.net/servers/detail/${r.server_code}`;
 
-            return `${medal} **${r.server_name}**\n🟢 En línea: **${r.online_now}** | 👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}\n🔗 ${link}`;
+            const lastSeen = r.last_seen ? new Date(r.last_seen) : null;
+            const minsAgo = lastSeen ? minutesBetween(nowRD, lastSeen) : 999999;
+
+            const isOffline = !lastSeen || minsAgo > offlineMinutes;
+            const status = isOffline ? `🔴 **OFFLINE**` : `🟢 En línea: **${r.online_now}**`;
+
+            return `${medal} **${r.server_name}**\n${status}\n👥 Max: **${r.max_players}** | Avg: **${r.avg_players}** | Muestras: ${r.samples}\n🔗 ${link}`;
           })
           .join("\n\n")
       : "⏳ No hay datos todavía (esperando samples del collector).";
@@ -167,8 +176,12 @@ async function main() {
     content: "",
     embeds: [
       {
-        title: "📊 **TOP EN VIVO (FiveM)**",
-        description: `(Actualiza cada 30 min | Métrica: Max players)\n\n${rankingTexto}`,
+        title: "📊 TOP EN VIVO (FiveM)",
+        description:
+          `🕙 **Reinicio diario: 10:00 AM RD**\n` +
+          `📅 Ventana: **${windowLabel}**\n` +
+          `(Actualiza cada 30 min | Métrica: Max players)\n\n` +
+          `${rankingTexto}`,
         color: 7306,
         footer: { text: "By: JayyP" },
         image: {
@@ -182,8 +195,7 @@ async function main() {
   };
 
   await patchMessage(webhookBase, messageId, payload);
-
-  console.log("Report updated:", dayKey, "message:", messageId);
+  console.log("Report updated. Window start:", start.toISOString(), "message:", messageId);
 }
 
 main().catch((e) => {
