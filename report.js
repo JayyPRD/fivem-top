@@ -88,7 +88,7 @@ async function main() {
   const messageId = await ensureMessageId(webhookBase);
 
   // ✅ Reset automático a las 12:00 AM RD
-  if (isMidnightRD()) {
+  if (isResetHourRD()) {
     const payloadReset = {
       content: "",
       embeds: [
@@ -108,7 +108,7 @@ async function main() {
     };
 
     await patchMessage(webhookBase, messageId, payloadReset);
-    console.log("Reset automático aplicado (00:00 RD). message:", messageId);
+    console.log("Reset automático aplicado (10:00 RD). message:", messageId);
     return;
   }
 
