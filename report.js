@@ -14,49 +14,22 @@ function minutesBetween(a, b) {
   return Math.floor((a.getTime() - b.getTime()) / 60000);
 }
 
-// ✅ LIVE CHECK (CFX) — players reales ahora mismo (MEJORADO)
+// ✅ LIVE CHECK (CFX) — players reales ahora mismo
 async function getLivePlayers(serverCode) {
-  const urls = [
-    `https://servers-frontend.fivem.net/api/servers/single/${serverCode}`,
-    `https://servers.fivem.net/api/servers/single/${serverCode}`,
-  ];
+  try {
+    const res = await fetch(`https://servers.fivem.net/api/servers/single/${serverCode}`, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+    if (!res.ok) return { ok: false };
 
-  for (const url of urls) {
-    try {
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 8000);
+    const data = await res.json();
+    const players = data?.Data?.clients;
 
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-          "Accept": "application/json,text/plain,*/*",
-          "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-        },
-        signal: controller.signal,
-      });
-
-      clearTimeout(t);
-
-      if (!res.ok) continue;
-
-      const data = await res.json();
-
-      const raw =
-        data?.Data?.clients ??
-        data?.Data?.Clients ??
-        data?.data?.clients ??
-        data?.clients;
-
-      const players = Number(raw);
-
-      if (Number.isFinite(players)) return { ok: true, players, source: url };
-    } catch {
-      // sigue al próximo url
-    }
+    if (typeof players === "number") return { ok: true, players };
+    return { ok: false };
+  } catch {
+    return { ok: false };
   }
-
-  return { ok: false };
 }
 
 // ✅ Concurrencia limitada
@@ -191,7 +164,7 @@ async function main() {
 
   await db.connect();
 
-  // ✅ Siempre devuelve LOS servers aunque no tengan samples en la ventana
+  // ✅ Siempre devuelve LOS 8 servers aunque no tengan samples en la ventana
   const { rows } = await db.query(
     `
     WITH srv AS (
@@ -237,7 +210,7 @@ async function main() {
 
   await db.end();
 
-  // ✅ LIVE CHECK para TODOS los servers.json
+  // ✅ LIVE CHECK para TODOS los servers.json (tú tienes 8)
   const liveResults = await mapLimit(servers, 4, async (s) => {
     const live = await getLivePlayers(s.code);
     return { server_code: s.code, live };
@@ -247,7 +220,7 @@ async function main() {
   const offlineMinutes = Number(process.env.OFFLINE_MINUTES || "45");
   const nowRD = rdNow();
 
-  // ✅ Orden por Max (ventana)
+  // ✅ Orden por Max (ventana) y top 10 (pero realmente serán 8)
   const ordered = [...rows].sort((a, b) => Number(b.max_players) - Number(a.max_players));
   const top = ordered.slice(0, 10);
 
@@ -267,23 +240,20 @@ async function main() {
             const minsAgo = lastSeen ? minutesBetween(nowRD, lastSeen) : 999999;
 
             const staleOffline = !lastSeen || minsAgo > offlineMinutes;
-            const lastPlayers = Number(r.online_in_win ?? 0);
 
             const live = liveMap.get(r.server_code) || { ok: false };
 
-            // ✅ STATUS (arreglado para NO poner OFFLINE falso)
             let statusLine;
             if (live.ok) {
-              statusLine =
-                live.players > 0
-                  ? `🟢 En línea: **${live.players}**`
-                  : `🔴 **OFFLINE**`;
+              statusLine = live.players > 0
+                ? `🟢 En línea: **${live.players}**`
+                : `🔴 **OFFLINE**`;
             } else {
-              // live falló => NO inventamos OFFLINE si hay sample reciente
-              if (staleOffline) {
+              // fallback DB (si live falla)
+              if (staleOffline || Number(r.online_in_win || 0) === 0) {
                 statusLine = `🔴 **OFFLINE**`;
               } else {
-                statusLine = `🟡 En línea (último sample): **${lastPlayers}**`;
+                statusLine = `🟢 En línea: **${r.online_in_win}**`;
               }
             }
 
