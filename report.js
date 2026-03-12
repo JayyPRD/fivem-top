@@ -115,18 +115,31 @@ async function ensureMessageId(webhookBaseUrl) {
   return data.id;
 }
 
-async function patchMessage(webhookBase, messageId, payload) {
+// ✅ SOLO ESTA FUNCIÓN CAMBIÓ (retry automático)
+async function patchMessage(webhookBase, messageId, payload, retries = 3) {
   const editUrl = `${webhookBase}/messages/${messageId}`;
 
-  const res = await fetch(editUrl, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  try {
+    const res = await fetch(editUrl, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Webhook PATCH ${res.status}: ${text}`);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Webhook PATCH ${res.status}: ${text}`);
+    }
+
+  } catch (err) {
+
+    if (retries > 0) {
+      console.log("Webhook error, retrying in 5s...", retries);
+      await new Promise(r => setTimeout(r, 5000));
+      return patchMessage(webhookBase, messageId, payload, retries - 1);
+    }
+
+    console.error("Webhook failed after retries:", err);
   }
 }
 
@@ -138,7 +151,7 @@ function buildResetRanking() {
 function getCompetitiveWindowRD() {
   const now = rdNow();
   const start = new Date(now);
-  start.setHours(12, 0, 0, 0); // ✅ 12:00 PM RD
+  start.setHours(12, 0, 0, 0);
 
   if (now.getHours() < 12) {
     start.setDate(start.getDate() - 1);
@@ -154,7 +167,6 @@ async function main() {
   const webhookBase = process.env.DISCORD_WEBHOOK_URL;
   const messageId = await ensureMessageId(webhookBase);
 
-  // ✅ Reset visual automático
   if (isResetHourRD()) {
     const payloadReset = {
       content: "",
@@ -191,7 +203,6 @@ async function main() {
 
   await db.connect();
 
-  // ✅ Siempre devuelve LOS servers aunque no tengan samples en la ventana
   const { rows } = await db.query(
     `
     WITH srv AS (
@@ -237,7 +248,6 @@ async function main() {
 
   await db.end();
 
-  // ✅ LIVE CHECK para TODOS los servers.json
   const liveResults = await mapLimit(servers, 4, async (s) => {
     const live = await getLivePlayers(s.code);
     return { server_code: s.code, live };
@@ -247,7 +257,6 @@ async function main() {
   const offlineMinutes = Number(process.env.OFFLINE_MINUTES || "45");
   const nowRD = rdNow();
 
-  // ✅ Orden por Max (ventana)
   const ordered = [...rows].sort((a, b) => Number(b.max_players) - Number(a.max_players));
   const top = ordered.slice(0, 10);
 
@@ -271,7 +280,6 @@ async function main() {
 
             const live = liveMap.get(r.server_code) || { ok: false };
 
-            // ✅ STATUS (arreglado para NO poner OFFLINE falso)
             let statusLine;
             if (live.ok) {
               statusLine =
@@ -279,7 +287,6 @@ async function main() {
                   ? `🟢 En línea: **${live.players}**`
                   : `🔴 **OFFLINE**`;
             } else {
-              // live falló => NO inventamos OFFLINE si hay sample reciente
               if (staleOffline) {
                 statusLine = `🔴 **OFFLINE**`;
               } else {
